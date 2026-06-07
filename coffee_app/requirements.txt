@@ -6,3 +6,4 @@ pypdf
 scikit-learn
 openai
 anthropic
+supabase
