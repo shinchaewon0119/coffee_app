@@ -1030,9 +1030,9 @@ def render_card(conn, item, conds, session_tags, user_id, session_id,
  
  
 def main():
-    st.set_page_config(page_title="커피 원두 추천 MVP", page_icon="☕", layout="centered")
+    st.set_page_config(page_title="나만의 원두 취향 도우미", page_icon="☕", layout="centered")
     st.markdown(CARD_CSS, unsafe_allow_html=True)
-    st.title("☕ 커피 원두 추천")
+    st.title("☕ 나만의 원두 취향 도우미")
     st.markdown('<div class="subtle">취향을 말해주세요. 어울리는 원두를 골라드릴게요.</div>',
                 unsafe_allow_html=True)
  
