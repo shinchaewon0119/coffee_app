@@ -82,7 +82,10 @@ unsafe_caffeine_caution = [
     "각성제처럼", "카페인 제일 센",
 ]
 profanity_terms = [
-    "씨발", "시발", "ㅅㅂ", "ㅄ", "병신", "존나", "개새끼", "닥쳐", "꺼져", "멍청이", "바보",
+    "씨발", "시발", "ㅅㅂ", "ㅄ", "병신", "존나",
+    "개새끼", "새끼", "개새", "개쉐", "ㅅㄲ",
+    "닥쳐", "꺼져", "멍청이", "바보", "지랄", "ㅈㄹ",
+    "미친", "또라이", "똥", "똥아", "시바", "씨바", "개소리",
 ]
 off_topic_terms = [
     "주식 추천", "코인 추천", "연애 상담", "숙제 대신", "자소서 써줘", "정치",
@@ -101,8 +104,16 @@ POLICY_MESSAGES = {
 }
 
 
+def _normalize_policy_text(text):
+    """띄어쓰기/특수문자를 제거해 금칙어 우회 입력을 더 잘 잡는다."""
+    text = (text or "").lower()
+    text = re.sub(r"[\s\W_]+", "", text)
+    return text
+
+
 def _contains(text, terms):
-    return any(term.lower() in text.lower() for term in terms)
+    norm_text = _normalize_policy_text(text)
+    return any(_normalize_policy_text(term) in norm_text for term in terms)
 
 
 def classify_policy(user_input, conds=None):
@@ -847,6 +858,41 @@ def parse_attribute_score(attr, text, llm_fn=None):
     return 3
 
 
+def is_valid_onboarding_answer(attr, text):
+    """온보딩 답변이 해당 커피 취향 질문에 대한 답변으로 해석 가능한지 검사한다."""
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+
+    # 숫자 점수는 항상 유효한 답변으로 인정
+    if re.search(r"([1-5])\s*점", t) or re.search(r"(?<![0-9])([1-5])(?![0-9])", t):
+        return True
+
+    # 너무 짧고 의미가 약한 단독 반응은 재입력 유도
+    weak_only = ["ㅋ", "ㅋㅋ", "ㅋㅋㅋ", "ㅎ", "ㅎㅎ", "ㅎㅎㅎ", "ㅇㅇ", "ㄴㄴ", "응", "아니", "뭐래"]
+    if t in weak_only:
+        return False
+
+    valid_common = [
+        "낮", "높", "중간", "보통", "적당", "강", "약",
+        "좋", "싫", "없", "있는", "많", "적", "별로",
+        "은은", "진한", "깔끔", "부드", "고소", "달", "쓴", "신",
+        "산미", "단맛", "쓴맛", "바디", "향", "묵직", "가벼",
+        "마일드", "라이트", "다크", "초콜릿", "카라멜", "캐러멜",
+        "과일", "시트러스", "꽃", "견과", "너티", "라떼"
+    ]
+
+    attr_words = {
+        "acidity": ["산미", "신맛", "상큼", "새콤", "레몬", "오렌지", "시트러스", "산뜻", "신"],
+        "sweet": ["단맛", "달달", "달콤", "꿀", "카라멜", "캐러멜", "초콜릿", "당도", "단"],
+        "bitter": ["쓴맛", "쌉싸름", "쌉쌀", "다크", "초콜릿", "말차", "쓴"],
+        "body": ["바디", "바디감", "묵직", "가벼", "진한", "깔끔", "크리미", "물처럼", "질감"],
+        "flavor": ["향", "은은", "진한", "초콜릿", "과일", "꽃", "고소", "카라멜", "캐러멜", "선명"],
+    }
+
+    return any(w in t for w in valid_common + attr_words.get(attr, []))
+
+
 _SCORE_PHRASE = {1: "거의 없는 쪽", 2: "낮은 편", 3: "적당한 정도", 4: "있는 편", 5: "강한 쪽"}
 
 
@@ -894,6 +940,24 @@ def render_onboarding(conn, user_id, llm_fn):
     ss["ob_chat"].append(("user", reply))
     step = ss["ob_step"]
 
+    # 온보딩 답변도 입력정책 모듈을 반드시 먼저 거치게 함
+    # 욕설/프롬프트 인젝션/건강과장/카페인 위험/범위 밖 요청이
+    # 취향 점수나 장기 프로필에 저장되지 않도록 차단한다.
+    policy_status, policy_reason = classify_policy(reply, conds=None)
+
+    if policy_status in ("reject", "soft_reject"):
+        ss["ob_chat"].append((
+            "assistant",
+            policy_message(policy_status, policy_reason)
+            or "추천을 위해 커피 취향에 맞는 답변을 입력해 주세요.\n\n"
+               "예: 1점이요 / 쓴맛은 거의 없는 게 좋아요 / 묵직하고 진한 느낌이 좋아요"
+        ))
+        st.rerun()
+
+    if policy_status == "caution":
+        ss["ob_chat"].append(("assistant", policy_message(policy_status, policy_reason)))
+        st.rerun()
+
     # 인사말은 온보딩 답변으로 처리하지 않음
     greeting_words = ["안녕", "안녕하세요", "하이", "ㅎㅇ", "반가워요", "반갑습니다"]
     if any(g in reply for g in greeting_words):
@@ -907,6 +971,16 @@ def render_onboarding(conn, user_id, llm_fn):
     #--- 감각 질문 단계 ---
     if step < n:
         attr = ONBOARD_STEPS[step]["key"]
+
+        # 금칙어는 아니지만 커피 취향 답변으로 보기 어려운 입력은 저장하지 않음
+        if not is_valid_onboarding_answer(attr, reply):
+            ss["ob_chat"].append((
+                "assistant",
+                "방금 답변은 취향으로 해석하기 어려워요. 숫자나 느낌으로 다시 말해 주세요.\n\n"
+                "예: 1점이요 / 단맛은 거의 없어도 돼요 / 달콤한 느낌이 좋아요"
+            ))
+            st.rerun()
+
         score = parse_attribute_score(attr, reply, llm_fn)
         ss["ob_answers"][attr] = score
         ss["ob_step"] = step + 1
